@@ -1,0 +1,15 @@
+[project]
+name = "comfyui-wanv2v-video-stitcher"
+description = "ComfyUI custom node pack for WAN v2v long video generation. Provides nodes for chunking, overlap stitching, control group orchestration, debug numbering, and de-overlap merging to create seamless long-form videos."
+version = "1.0.0"
+license = { file = "LICENSE" }
+dependencies = ["torch"]
+
+[project.urls]
+Repository = "https://github.com/Kishor900/comfyui-wanv2v-video-stitcher"
+# Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "kishor900"
+DisplayName = "ComfyUI WANv2v Video Stitcher"
+Icon = ""

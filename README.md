@@ -61,6 +61,7 @@ This pack is especially useful if you are generating videos with **WAN v2v** whe
 2. Clone this repo:
   ```bash
   git clone https://github.com/<your-username>/comfyui-wanv2v-video-stitcher.git
+ ```
 
 3. Restart ComfyUI.
   The new nodes will appear under:

@@ -66,9 +66,9 @@ This pack is especially useful if you are generating videos with **WAN v2v** whe
 3. Restart ComfyUI.
   The new nodes will appear under:
   ```bash
-  WanV2vControlnetManager/Debug
+  WanV2vControlnetManager/Debug ```
   ```bash
-  WanV2vControlnetManager/WAN
+  WanV2vControlnetManager/WAN ```
 
 ## 🚀 Usage Example (Workflow)
 

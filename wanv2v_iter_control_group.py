@@ -2,21 +2,14 @@ from typing import Tuple
 import torch
 
 """
-WanV2VIterControlGroup (finalized)
+WanV2VIterControlGroup (finalized + masks)
 
-Builds the control batch for a single iteration `iter` using:
-- tail of previous sampler output (last x frames), and
-- residue from the previous control group (last (iter-2)*x frames of group_{i-1}),
-- plus current group's keep (group_i minus last (iter-1)*x),
-then tops up to exactly `chunk_size`.
+Adds a mask batch output aligned with the built control group:
+- Size: chunk_size (B,H,W)
+- First `overlap_size` masks are BLACK (0.0 -> non-editable),
+- Remaining masks are WHITE (1.0 -> editable).
 
-Finalization:
-If `iter >= 2` and there are NO control frames left for group_i (past end of timeline),
-we build a "conclusive" chunk using only:
-    tail(prev_output) + residue_prev
-and pad to chunk_size by repeating the last frame of prev_output.
-
-This covers remaining temporal context (e.g., frames 78..92 in your example) without requiring new control frames.
+Everything else remains unchanged.
 """
 
 def _sec_to_hms_ms(sec: float) -> str:
@@ -43,8 +36,9 @@ class WanV2VIterControlGroup:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("control_group", "info")
+    # Added a MASK batch as the 3rd return
+    RETURN_TYPES = ("IMAGE", "STRING", "MASK")
+    RETURN_NAMES = ("control_group", "info", "edit_mask_batch")
     FUNCTION = "build"
     CATEGORY = "Wanv2vControlnetManager/WAN"
 
@@ -80,6 +74,19 @@ class WanV2VIterControlGroup:
         last = t[-1:].repeat(need, 1, 1, 1)
         return torch.cat([t, last], dim=0)
 
+    def _build_masks(self, H: int, W: int, chunk_size: int, overlap_size: int, device, dtype=torch.float32) -> torch.Tensor:
+        """
+        Returns a (B,H,W) mask batch:
+          first overlap_size are 0.0 (black, non-editable),
+          remaining are 1.0 (white, editable).
+        """
+        B = max(1, int(chunk_size))
+        x = max(0, int(overlap_size))
+        x = min(x, B)  # cap to B
+        black = torch.zeros((x, H, W), dtype=dtype, device=device)
+        white = torch.ones((B - x, H, W), dtype=dtype, device=device)
+        return torch.cat([black, white], dim=0)
+
     # ---- core ----
     def build(
         self,
@@ -89,7 +96,7 @@ class WanV2VIterControlGroup:
         iter: int,
         fps: float,
         prev_output: torch.Tensor = None,
-    ) -> Tuple[torch.Tensor, str]:
+    ) -> Tuple[torch.Tensor, str, torch.Tensor]:
 
         frames = self._ensure_batched(controlnet_images)
         T, H, W, C = frames.shape
@@ -120,7 +127,9 @@ class WanV2VIterControlGroup:
             if base_start_i >= T:
                 empty = self._empty_like(frames, 0)
                 info = f"(empty) iter={iter}, total={T} ({_sec_to_hms_ms(total_seconds)} @ {fps:.2f})"
-                return empty, info
+                # Even if empty, still emit a mask batch shape (chunk_size,H,W)
+                masks = self._build_masks(H, W, chunk_size, overlap_size, frames.device)
+                return empty, info, masks
 
             group_i = self._slice_safe(frames, base_start_i, min(base_end_i, T))
             built = group_i
@@ -133,7 +142,10 @@ class WanV2VIterControlGroup:
 
             used = f"[{base_start_i}:{min(base_end_i, T)}]"
             info = f"iter={iter}, built={built.shape[0]}, used={used}, total={T} ({_sec_to_hms_ms(total_seconds)} @ {fps:.2f})"
-            return built, info
+
+            # Mask batch: first overlap_size black, rest white
+            masks = self._build_masks(H, W, built.shape[0], overlap_size, frames.device)
+            return built, info, masks
 
         # --- Iter >= 2: need prev_output tail and residue from group_{i-1} ---
         prev_out = self._ensure_batched(prev_output)
@@ -153,7 +165,8 @@ class WanV2VIterControlGroup:
                 empty = self._empty_like(frames, 0)
                 info = (f"(empty) iter={iter}: drop={drop} >= chunk_size={chunk_size}; "
                         f"total={T} ({_sec_to_hms_ms(total_seconds)} @ {fps:.2f})")
-                return empty, info
+                masks = self._build_masks(H, W, chunk_size, overlap_size, frames.device)
+                return empty, info, masks
 
             keep = group_i[:-drop] if drop > 0 else group_i
             built = torch.cat([tail_prev, residue_prev, keep], dim=0)
@@ -171,7 +184,9 @@ class WanV2VIterControlGroup:
                 f"keep={keep.shape[0]}, built={built.shape[0]}, total={T} "
                 f"({_sec_to_hms_ms(total_seconds)} @ {fps:.2f})"
             )
-            return built, info
+
+            masks = self._build_masks(H, W, built.shape[0], overlap_size, frames.device)
+            return built, info, masks
 
         # Case B: FINALIZATION (no group_i left) → use tail(prev) + residue_prev only, pad with last frame
         built = torch.cat([tail_prev, residue_prev], dim=0)
@@ -185,4 +200,6 @@ class WanV2VIterControlGroup:
             f"built={built.shape[0]} (padded with last prev frame if needed), total={T} "
             f"({_sec_to_hms_ms(total_seconds)} @ {fps:.2f})"
         )
-        return built, info
+
+        masks = self._build_masks(H, W, built.shape[0], overlap_size, frames.device)
+        return built, info, masks
